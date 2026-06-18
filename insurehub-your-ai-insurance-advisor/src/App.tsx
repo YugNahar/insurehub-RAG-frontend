@@ -18,8 +18,6 @@ import { Input } from "@/components/ui/input";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { apiFetch, clearToken, getToken, setToken } from "@/lib/api";
 import { cn } from "@/lib/utils";
-import { reportLovableError } from "@/lib/lovable-error-reporting";
-
 // ─────────────────────────────────────────────
 // QueryClient
 // ─────────────────────────────────────────────
@@ -65,7 +63,6 @@ function GlobalErrorBoundary({ children }: { children: ReactNode }) {
 
   if (error) {
     console.error(error);
-    reportLovableError(error, { boundary: "react_error_boundary" });
     return (
       <div className="flex min-h-screen items-center justify-center bg-background px-4">
         <div className="max-w-md text-center">
