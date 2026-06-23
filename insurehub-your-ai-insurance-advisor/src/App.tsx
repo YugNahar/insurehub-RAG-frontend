@@ -473,6 +473,7 @@ type Item = {
   title?: string;
   url?: string;
   filename?: string;
+  chunks?: number;
 };
 
 function AdminPage() {
@@ -585,9 +586,15 @@ function useList(endpoint: string) {
       const raw: unknown[] = Array.isArray(data)
         ? data
         : (data?.items || data?.results || data?.documents || data?.docs || data?.videos || data?.webpages || []);
-      const arr: Item[] = raw.map((v, i) =>
-        typeof v === "string" ? { id: v, name: v } : { ...(v as Item), id: (v as Item).id ?? (v as Item).name ?? (v as Item).filename ?? i },
-      );
+      const arr: Item[] = raw.map((v, i) => {
+        if (typeof v === "string") return { id: v, name: v };
+        const obj = v as Record<string, unknown>;
+        // Documents: {filename, chunks} → use filename as id for delete
+        if (obj.filename) return { id: obj.filename as string, name: obj.filename as string, chunks: obj.chunks as number };
+        // Videos: {url, title} → use url as id for delete, title for display
+        if (obj.url) return { id: obj.url as string, url: obj.url as string, title: obj.title as string ?? obj.url as string };
+        return { ...(obj as Item), id: (obj.id ?? obj.name ?? obj.filename ?? i) as string | number };
+      });
       setItems(arr);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load");
@@ -718,6 +725,7 @@ function DocumentsTab() {
         emptyLabel="No documents uploaded yet."
         onRemove={remove}
         renderLabel={(it) => it.filename || it.name || it.title || String(it.id)}
+        renderSubLabel={(it) => it.chunks != null ? `${it.chunks} chunks indexed` : undefined}
         icon={<FileText className="h-4 w-4 text-primary" />}
       />
     </Panel>
@@ -798,8 +806,8 @@ function UrlTab({
         error={error}
         emptyLabel={emptyLabel}
         onRemove={remove}
-        renderLabel={(it) => it.title || it.url || it.name || String(it.id)}
-        renderSubLabel={(it) => (it.title && it.url ? it.url : undefined)}
+        renderLabel={(it) => (it.title && it.title !== it.url ? it.title : it.url || it.name || String(it.id))}
+        renderSubLabel={(it) => (it.title && it.title !== it.url && it.url ? it.url : undefined)}
         icon={icon}
       />
     </Panel>
