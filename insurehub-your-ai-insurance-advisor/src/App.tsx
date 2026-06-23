@@ -16,7 +16,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { apiFetch, clearToken, getToken, setToken } from "@/lib/api";
+import { apiFetch, apiStream, clearToken, getToken, setToken } from "@/lib/api";
 import { cn } from "@/lib/utils";
 // ─────────────────────────────────────────────
 // QueryClient
@@ -189,21 +189,47 @@ function ChatWidget({
     setMessages(next);
     setInput("");
     setSending(true);
+
+    // Add an empty assistant message that we'll fill in token-by-token
+    setMessages((m) => [...m, { role: "assistant", content: "" } as Message]);
+
     try {
-      const data = await apiFetch("/ask", {
-        method: "POST",
-        body: JSON.stringify({ question: text }),
-      });
-      const reply = (data && data.answer) ?? "Sorry, I couldn't get a response.";
-      setMessages((m) => [...m, { role: "assistant", content: String(reply) }]);
-    } catch (err) {
-      setMessages((m) => [
-        ...m,
-        {
-          role: "assistant",
-          content: "I'm having trouble reaching the server right now. Please try again in a moment.",
+      await apiStream(
+        text,
+        (token) => {
+          // Append each token to the last (assistant) message
+          setMessages((m) => {
+            const updated = [...m];
+            updated[updated.length - 1] = {
+              ...updated[updated.length - 1],
+              content: updated[updated.length - 1].content + token,
+            };
+            return updated;
+          });
         },
-      ]);
+        (_sources) => {
+          // Stream finished — nothing extra to do, message is already built
+        },
+        (errMsg) => {
+          setMessages((m) => {
+            const updated = [...m];
+            updated[updated.length - 1] = {
+              ...updated[updated.length - 1],
+              content: errMsg,
+            };
+            return updated;
+          });
+        },
+      );
+    } catch (err) {
+      setMessages((m) => {
+        const updated = [...m];
+        updated[updated.length - 1] = {
+          ...updated[updated.length - 1],
+          content: "I'm having trouble reaching the server right now. Please try again in a moment.",
+        };
+        return updated;
+      });
       console.error(err);
     } finally {
       setSending(false);
@@ -558,7 +584,7 @@ function useList(endpoint: string) {
       const data = await apiFetch(endpoint);
       const raw: unknown[] = Array.isArray(data)
         ? data
-        : (data?.items || data?.results || data?.documents || data?.docs || []);
+        : (data?.items || data?.results || data?.documents || data?.docs || data?.videos || data?.webpages || []);
       const arr: Item[] = raw.map((v, i) =>
         typeof v === "string" ? { id: v, name: v } : { ...(v as Item), id: (v as Item).id ?? (v as Item).name ?? (v as Item).filename ?? i },
       );
