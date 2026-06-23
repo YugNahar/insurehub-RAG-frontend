@@ -609,25 +609,50 @@ function DocumentsTab() {
   const { items, loading, error, reload } = useList(listEndpoint);
   const [dragOver, setDragOver] = useState(false);
   const [uploading, setUploading] = useState(false);
+  const [uploadStatus, setUploadStatus] = useState<string | null>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+
+  async function pollUntilDone(jobId: string, filename: string): Promise<void> {
+    for (let i = 0; i < 60; i++) {
+      await new Promise((r) => setTimeout(r, 2000));
+      try {
+        const job = await apiFetch(`/upload/${jobId}`);
+        if (job.status === "done") return;
+        if (job.status === "error") throw new Error(job.error || "Processing failed");
+        setUploadStatus(`Processing ${filename}…`);
+      } catch (e) {
+        if (e instanceof Error && e.message.includes("Processing failed")) throw e;
+      }
+    }
+    throw new Error("Timed out waiting for document to be indexed");
+  }
 
   async function uploadFiles(files: FileList | File[]) {
     const list = Array.from(files);
     if (!list.length) return;
     setUploading(true);
     setUploadError(null);
+    setUploadStatus(null);
     try {
       for (const file of list) {
+        setUploadStatus(`Uploading ${file.name}…`);
         const fd = new FormData();
         fd.append("file", file);
-        await apiFetch(uploadEndpoint, { method: "POST", body: fd });
+        const res = await apiFetch(uploadEndpoint, { method: "POST", body: fd });
+        // Upload is async — poll until the background job finishes indexing
+        if (res?.job_id) {
+          setUploadStatus(`Indexing ${file.name}…`);
+          await pollUntilDone(res.job_id, file.name);
+        }
       }
+      setUploadStatus(null);
       await reload();
     } catch (e) {
       setUploadError(e instanceof Error ? e.message : "Upload failed");
     } finally {
       setUploading(false);
+      setUploadStatus(null);
     }
   }
 
@@ -670,7 +695,7 @@ function DocumentsTab() {
           <Upload className="h-5 w-5" />
         </div>
         <p className="mt-3 text-sm font-medium">
-          {uploading ? "Uploading…" : "Drag & drop files here, or click to browse"}
+          {uploadStatus ?? (uploading ? "Uploading…" : "Drag & drop files here, or click to browse")}
         </p>
         <p className="mt-1 text-xs text-muted-foreground">PDF, DOCX, TXT and more</p>
         <input
@@ -716,6 +741,7 @@ function UrlTab({
   const { items, loading, error, reload } = useList(endpoint);
   const [url, setUrl] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const [submitStatus, setSubmitStatus] = useState<string | null>(null);
   const [submitError, setSubmitError] = useState<string | null>(null);
 
   async function add(e: React.FormEvent) {
@@ -723,17 +749,20 @@ function UrlTab({
     if (!url.trim()) return;
     setSubmitting(true);
     setSubmitError(null);
+    setSubmitStatus("Processing… this can take up to a minute");
     try {
       await apiFetch(endpoint, {
         method: "POST",
         body: JSON.stringify({ url: url.trim() }),
       });
       setUrl("");
+      setSubmitStatus(null);
       await reload();
     } catch (e) {
       setSubmitError(e instanceof Error ? e.message : "Failed to add");
     } finally {
       setSubmitting(false);
+      setSubmitStatus(null);
     }
   }
 
@@ -757,9 +786,10 @@ function UrlTab({
           required
         />
         <Button type="submit" disabled={submitting || !url.trim()}>
-          {submitting ? "Adding…" : addLabel}
+          {submitting ? "Processing…" : addLabel}
         </Button>
       </form>
+      {submitStatus && <p className="mt-2 text-xs text-muted-foreground">{submitStatus}</p>}
       {submitError && <p className="mt-2 text-xs text-destructive">{submitError}</p>}
 
       <ItemList
