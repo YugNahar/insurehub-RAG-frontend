@@ -32,14 +32,25 @@ export async function apiFetch(path: string, init: RequestInit = {}) {
   return ct.includes("application/json") ? res.json() : res.text();
 }
 
+export interface StreamMeta {
+  sources: string[];
+  needs_human: boolean;
+}
+
+/** Convert an http(s) API URL to the equivalent ws(s) URL for WebSocket connections. */
+export function getWsUrl(): string {
+  return API_URL.replace(/^https/, "wss").replace(/^http(?!s)/, "ws");
+}
+
 /**
  * Stream a POST to /ask-stream.
- * Calls onToken for each text chunk, then onDone with the final sources array.
+ * Calls onToken for each text chunk, then onDone with sources + needs_human flag.
  */
 export async function apiStream(
   question: string,
+  sessionId: string,
   onToken: (token: string) => void,
-  onDone: (sources: string[]) => void,
+  onDone: (meta: StreamMeta) => void,
   onError: (msg: string) => void,
 ) {
   const headers = new Headers({ "Content-Type": "application/json" });
@@ -51,7 +62,7 @@ export async function apiStream(
     res = await fetch(`${API_URL}/ask-stream`, {
       method: "POST",
       headers,
-      body: JSON.stringify({ question }),
+      body: JSON.stringify({ question, session_id: sessionId }),
     });
   } catch {
     onError("Cannot reach the server. Is the backend running?");
@@ -73,27 +84,24 @@ export async function apiStream(
     buffer += decoder.decode(value, { stream: true });
 
     // The backend appends a final JSON line: {"sources":[...],"done":true}
-    // Split on that so we can extract it without showing it as text.
     const jsonStart = buffer.lastIndexOf('\n\n{"sources"');
     if (jsonStart !== -1) {
       const textPart = buffer.slice(0, jsonStart);
-      const jsonPart = buffer.slice(jsonStart + 2); // skip the \n\n
+      const jsonPart = buffer.slice(jsonStart + 2);
       if (textPart) onToken(textPart);
       try {
         const meta = JSON.parse(jsonPart);
-        onDone(meta.sources ?? []);
+        onDone({ sources: meta.sources ?? [], needs_human: meta.needs_human ?? false });
       } catch {
-        onDone([]);
+        onDone({ sources: [], needs_human: false });
       }
       return;
     }
 
-    // Normal token chunk — pass straight to UI
     onToken(buffer);
     buffer = "";
   }
 
-  // Stream ended without a done sentinel
   if (buffer) onToken(buffer);
-  onDone([]);
+  onDone({ sources: [], needs_human: false });
 }

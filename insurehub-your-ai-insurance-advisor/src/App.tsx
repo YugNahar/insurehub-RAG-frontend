@@ -16,7 +16,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { apiFetch, apiStream, clearToken, getToken, setToken } from "@/lib/api";
+import { apiFetch, apiStream, clearToken, getToken, getWsUrl, setToken } from "@/lib/api";
 import { cn } from "@/lib/utils";
 // ─────────────────────────────────────────────
 // QueryClient
@@ -115,9 +115,16 @@ export function App() {
 // Index (Chat / Layla)
 // ─────────────────────────────────────────────
 
-type Message = { role: "user" | "assistant"; content: string };
+type Message = {
+  role: "user" | "assistant" | "agent" | "system";
+  content: string;
+  agentName?: string;
+};
 
-const STORAGE_KEY = "insurehub_chat_history";
+// Both keys in localStorage so session + history survive tab switches and browser restarts.
+// This prevents a new sidebar entry appearing whenever the user opens a fresh tab.
+const STORAGE_KEY    = "insurehub_chat_history";
+const SESSION_ID_KEY = "insurehub_session_id";
 
 const GREETING: Message = {
   role: "assistant",
@@ -133,6 +140,8 @@ function IndexPage() {
   );
 }
 
+type ChatMode = "ai" | "waiting" | "human";
+
 function ChatWidget({
   open,
   onOpenChange,
@@ -144,29 +153,113 @@ function ChatWidget({
   const [hydrated, setHydrated] = useState(false);
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
+  const [sessionId, setSessionId] = useState<string>("default");
+  const [chatMode, setChatMode] = useState<ChatMode>("ai");
+  const [agentName, setAgentName] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const wsRef = useRef<WebSocket | null>(null);
+  const pollSeenRef = useRef<number>(0);       // last message index seen via polling
+  const chatModeRef = useRef<ChatMode>("ai");  // ref so polling closure sees latest value
+
+  // chatModeRef is updated synchronously whenever setChatMode is called — see setModeSync below.
+  // This ensures polling closures always read the current value without a render cycle.
+
+  function setModeSync(mode: ChatMode) {
+    chatModeRef.current = mode;
+    setChatMode(mode);
+  }
+
+  // Create or reuse hub session on mount, then open WebSocket.
+  // Session ID is persisted in sessionStorage so page refreshes don't create a new chat entry.
+  useEffect(() => {
+    const storedId = window.localStorage.getItem(SESSION_ID_KEY);
+    if (storedId) {
+      // Sync pollSeenRef to backend total BEFORE starting the polling interval,
+      // so we don't replay old messages that are already in localStorage.
+      apiFetch(`/session/${storedId}/poll?after=0`)
+        .then((d) => { if (d?.total != null) pollSeenRef.current = d.total; })
+        .catch(() => {})
+        .finally(() => {
+          setSessionId(storedId);
+          const ws = new WebSocket(`${getWsUrl()}/ws/user/${storedId}`);
+          wsRef.current = ws;
+          ws.onmessage = handleWsMessage;
+          ws.onclose = () => { wsRef.current = null; };
+        });
+    } else {
+      apiFetch("/session/create", { method: "POST" })
+        .then((d: { session_id: string }) => {
+          if (!d?.session_id) return;
+          window.localStorage.setItem(SESSION_ID_KEY, d.session_id);
+          setSessionId(d.session_id);
+          const ws = new WebSocket(`${getWsUrl()}/ws/user/${d.session_id}`);
+          wsRef.current = ws;
+          ws.onmessage = handleWsMessage;
+          ws.onclose = () => { wsRef.current = null; };
+        })
+        .catch(() => {});
+    }
+  }, []);
+
+  // Polling — runs every second. Owns agent-message delivery and all chatMode transitions.
+  useEffect(() => {
+    if (sessionId === "default") return;
+    const interval = setInterval(async () => {
+      try {
+        const data = await apiFetch(`/session/${sessionId}/poll?after=${pollSeenRef.current}`);
+        if (!data) return;
+
+        // Sync chatMode with server status. Update ref synchronously so the
+        // next interval tick sees the correct value and doesn't double-fire.
+        if (data.status === "human" && chatModeRef.current !== "human") {
+          setModeSync("human");
+          setAgentName(data.agent_name || "Agent");
+          setMessages((m) => [
+            ...m,
+            { role: "system", content: `You're now connected with ${data.agent_name || "an agent"}. They can see your conversation and will help you directly.` },
+          ]);
+        }
+        if (data.status === "waiting" && chatModeRef.current === "ai") {
+          setModeSync("waiting");
+        }
+        if (data.status === "ai" && chatModeRef.current !== "ai") {
+          setModeSync("ai");
+          setAgentName(null);
+        }
+
+        // Deliver agent messages not yet shown
+        const newMsgs: { role: string; content: string; timestamp: string }[] = data.messages || [];
+        for (const m of newMsgs) {
+          if (m.role === "agent") {
+            setMessages((prev) => [
+              ...prev,
+              { role: "agent", content: m.content, agentName: data.agent_name || "Agent" },
+            ]);
+          }
+        }
+        if (data.total != null) pollSeenRef.current = data.total;
+      } catch { /* ignore */ }
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [sessionId]);
 
   useEffect(() => {
     try {
-      const raw = window.sessionStorage.getItem(STORAGE_KEY);
+      const raw = window.localStorage.getItem(STORAGE_KEY);
       if (raw) {
         const parsed = JSON.parse(raw) as Message[];
         if (Array.isArray(parsed) && parsed.length) setMessages(parsed);
       }
-    } catch {
-      // ignore
-    }
+    } catch { /* ignore */ }
     setHydrated(true);
   }, []);
 
   useEffect(() => {
     if (!hydrated) return;
     try {
-      window.sessionStorage.setItem(STORAGE_KEY, JSON.stringify(messages));
-    } catch {
-      // ignore
-    }
+      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(messages));
+    } catch { /* ignore */ }
   }, [messages, hydrated]);
 
   useEffect(() => {
@@ -182,22 +275,103 @@ function ChatWidget({
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
   }, [messages, sending]);
 
+  // Clean up WebSocket on unmount
+  useEffect(() => {
+    return () => { wsRef.current?.close(); };
+  }, []);
+
+  function handleWsMessage(ev: MessageEvent) {
+    const msg = JSON.parse(ev.data as string);
+    // agent_message is intentionally NOT handled here — polling owns message delivery
+    // to avoid duplicates (WebSocket + polling both firing the same message).
+    if (msg.type === "agent_joined") {
+      setAgentName(msg.agent_name);
+      // Guard: polling may have already transitioned to "human" a moment earlier.
+      // Only add the system message once.
+      if (chatModeRef.current !== "human") {
+        setModeSync("human");
+        setMessages((m) => [
+          ...m,
+          {
+            role: "system",
+            content: `You're now connected with ${msg.agent_name}. They can see your conversation and will help you directly.`,
+          },
+        ]);
+      }
+    } else if (msg.type === "agent_left") {
+      setAgentName(null);
+      setModeSync("ai");
+      setMessages((m) => [
+        ...m,
+        { role: "system", content: msg.message || "You're back with Layla." },
+      ]);
+    } else if (msg.type === "waiting") {
+      setMessages((m) => [
+        ...m,
+        { role: "system", content: msg.message },
+      ]);
+    } else if (msg.type === "session_deleted") {
+      // Agent cleared the conversation — wipe local state and start fresh
+      window.localStorage.removeItem(SESSION_ID_KEY);
+      window.localStorage.removeItem(STORAGE_KEY);
+      setModeSync("ai");
+      setAgentName(null);
+      pollSeenRef.current = 0;
+      setMessages([GREETING]);
+      if (wsRef.current) { wsRef.current.close(); wsRef.current = null; }
+      // Create a brand-new session
+      apiFetch("/session/create", { method: "POST" })
+        .then((d: { session_id: string }) => {
+          if (!d?.session_id) return;
+          window.localStorage.setItem(SESSION_ID_KEY, d.session_id);
+          setSessionId(d.session_id);
+          const ws = new WebSocket(`${getWsUrl()}/ws/user/${d.session_id}`);
+          wsRef.current = ws;
+          ws.onmessage = handleWsMessage;
+          ws.onclose = () => { wsRef.current = null; };
+        })
+        .catch(() => {});
+    }
+  }
+
+  function requestHandoff() {
+    // Guard: only trigger handoff once per AI session — don't re-trigger if already
+    // waiting for an agent or already in a live human session.
+    if (chatModeRef.current !== "ai") return;
+    setModeSync("waiting");
+    setMessages((m) => [
+      ...m,
+      { role: "system", content: "I'm finding a human agent who can help you better. One moment…" },
+    ]);
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ type: "request_handoff" }));
+    } else {
+      // WebSocket dropped — use HTTP fallback
+      apiFetch(`/session/${sessionId}/request-handoff`, { method: "POST" }).catch(() => {});
+    }
+  }
+
   async function send() {
     const text = input.trim();
     if (!text || sending) return;
-    const next = [...messages, { role: "user", content: text } as Message];
-    setMessages(next);
-    setInput("");
-    setSending(true);
 
-    // Add an empty assistant message that we'll fill in token-by-token
-    setMessages((m) => [...m, { role: "assistant", content: "" } as Message]);
+    setMessages((m) => [...m, { role: "user", content: text }]);
+    setInput("");
+
+    // In human mode, send via WebSocket directly
+    if (chatMode === "human" && wsRef.current?.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ type: "message", content: text }));
+      return;
+    }
+
+    setSending(true);
+    setMessages((m) => [...m, { role: "assistant", content: "" }]);
 
     try {
       await apiStream(
         text,
+        sessionId,
         (token) => {
-          // Append each token to the last (assistant) message
           setMessages((m) => {
             const updated = [...m];
             updated[updated.length - 1] = {
@@ -207,16 +381,13 @@ function ChatWidget({
             return updated;
           });
         },
-        (_sources) => {
-          // Stream finished — nothing extra to do, message is already built
+        (meta) => {
+          if (meta.needs_human) requestHandoff();
         },
         (errMsg) => {
           setMessages((m) => {
             const updated = [...m];
-            updated[updated.length - 1] = {
-              ...updated[updated.length - 1],
-              content: errMsg,
-            };
+            updated[updated.length - 1] = { ...updated[updated.length - 1], content: errMsg };
             return updated;
           });
         },
@@ -230,7 +401,6 @@ function ChatWidget({
         };
         return updated;
       });
-      console.error(err);
     } finally {
       setSending(false);
       requestAnimationFrame(() => inputRef.current?.focus());
@@ -243,6 +413,22 @@ function ChatWidget({
       send();
     }
   }
+
+  const headerLabel =
+    chatMode === "human" && agentName
+      ? `${agentName} · Live support`
+      : chatMode === "waiting"
+      ? "Finding an agent…"
+      : "InsureHub advisor · online";
+
+  const headerDotClass =
+    chatMode === "human"
+      ? "bg-blue-400"
+      : chatMode === "waiting"
+      ? "bg-amber-400 animate-pulse"
+      : "bg-emerald-400";
+
+  const avatarLabel = chatMode === "human" && agentName ? agentName[0].toUpperCase() : "L";
 
   return (
     <>
@@ -274,13 +460,15 @@ function ChatWidget({
         <div className="flex items-center gap-3 border-b border-border/60 bg-background/40 px-4 py-3">
           <div className="relative">
             <div className="flex h-9 w-9 items-center justify-center rounded-full bg-primary/20 text-sm font-semibold text-primary">
-              L
+              {avatarLabel}
             </div>
-            <span className="absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full bg-emerald-400 ring-2 ring-card" />
+            <span className={cn("absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full ring-2 ring-card", headerDotClass)} />
           </div>
           <div className="min-w-0 flex-1 leading-tight">
-            <div className="text-sm font-medium">Layla</div>
-            <div className="text-xs text-muted-foreground">InsureHub advisor · online</div>
+            <div className="text-sm font-medium">
+              {chatMode === "human" && agentName ? agentName : "Layla"}
+            </div>
+            <div className="text-xs text-muted-foreground">{headerLabel}</div>
           </div>
           <button
             type="button"
@@ -299,7 +487,7 @@ function ChatWidget({
           {sending && (
             <div className="flex items-center gap-2 text-xs text-muted-foreground">
               <TypingDots />
-              <span>Layla is typing…</span>
+              <span>{chatMode === "human" ? `${agentName} is typing…` : "Layla is typing…"}</span>
             </div>
           )}
         </div>
@@ -312,12 +500,13 @@ function ChatWidget({
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={onKey}
               rows={1}
-              placeholder="Type a message…"
-              className="max-h-32 flex-1 resize-none bg-transparent px-2 py-1.5 text-sm outline-none placeholder:text-muted-foreground"
+              placeholder={chatMode === "waiting" ? "Connecting you to an agent…" : "Type a message…"}
+              disabled={chatMode === "waiting"}
+              className="max-h-32 flex-1 resize-none bg-transparent px-2 py-1.5 text-sm outline-none placeholder:text-muted-foreground disabled:opacity-50"
             />
             <Button
               onClick={send}
-              disabled={!input.trim() || sending}
+              disabled={!input.trim() || sending || chatMode === "waiting"}
               size="icon"
               className="h-8 w-8 shrink-0 rounded-lg"
               aria-label="Send message"
@@ -332,23 +521,49 @@ function ChatWidget({
 }
 
 function MessageBubble({ message }: { message: Message }) {
-  const isUser = message.role === "user";
+  const { role, content, agentName } = message;
+
+  if (role === "system") {
+    return (
+      <div className="flex justify-center">
+        <div className="max-w-[90%] rounded-lg border border-border/40 bg-muted/30 px-3 py-1.5 text-center text-xs text-muted-foreground">
+          {content}
+        </div>
+      </div>
+    );
+  }
+
+  const isUser = role === "user";
+  const isAgent = role === "agent";
+
   return (
     <div className={cn("flex w-full gap-2", isUser ? "justify-end" : "justify-start")}>
       {!isUser && (
-        <div className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-primary/20 text-[11px] font-semibold text-primary">
-          L
+        <div
+          className={cn(
+            "mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-[11px] font-semibold",
+            isAgent ? "bg-blue-500/20 text-blue-400" : "bg-primary/20 text-primary",
+          )}
+        >
+          {isAgent ? (agentName?.[0]?.toUpperCase() ?? "A") : "L"}
         </div>
       )}
-      <div
-        className={cn(
-          "max-w-[80%] whitespace-pre-wrap rounded-2xl px-3.5 py-2 text-sm leading-relaxed",
-          isUser
-            ? "bg-primary text-primary-foreground rounded-br-sm"
-            : "bg-secondary text-secondary-foreground rounded-bl-sm",
+      <div className="flex flex-col gap-0.5">
+        {isAgent && agentName && (
+          <div className="text-[10px] font-medium text-blue-400 pl-1">{agentName}</div>
         )}
-      >
-        {message.content}
+        <div
+          className={cn(
+            "max-w-[80%] whitespace-pre-wrap rounded-2xl px-3.5 py-2 text-sm leading-relaxed",
+            isUser
+              ? "bg-primary text-primary-foreground rounded-br-sm"
+              : isAgent
+              ? "bg-blue-500/15 text-foreground rounded-bl-sm border border-blue-500/20"
+              : "bg-secondary text-secondary-foreground rounded-bl-sm",
+          )}
+        >
+          {content}
+        </div>
       </div>
     </div>
   );
