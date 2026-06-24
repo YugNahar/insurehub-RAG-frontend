@@ -879,10 +879,15 @@ function DocumentsTab() {
   const { items, loading, error, reload } = useList(listEndpoint);
   const [dragOver, setDragOver] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
-  const { addItem, updateItem } = React.useContext(UploadQueueContext);
+  const { addItem, updateItem, items: queueItems } = React.useContext(UploadQueueContext);
+
+  function canAddToQueue(): boolean {
+    const active = queueItems.filter((it) => it.status === "queued" || it.status === "processing").length;
+    return active < 10;
+  }
 
   async function pollUntilDone(jobId: string, itemId: string): Promise<void> {
-    for (let i = 0; i < 60; i++) {
+    for (let i = 0; i < 150; i++) {
       await new Promise((r) => setTimeout(r, 2000));
       try {
         const job = await apiFetch(`/upload/${jobId}`);
@@ -917,6 +922,10 @@ function DocumentsTab() {
     const files = e.dataTransfer.files;
     if (!files?.length) return;
     for (const file of Array.from(files)) {
+      if (!canAddToQueue()) {
+        console.warn("Queue full (max 10), skipping:", file.name);
+        continue;
+      }
       const id = String(Date.now()) + "-" + Math.random().toString(36).slice(2, 9);
       addItem({ id, name: file.name, type: "document", status: "queued" });
       uploadSingleFile(file, id);
@@ -927,6 +936,10 @@ function DocumentsTab() {
     const files = e.target.files;
     if (!files?.length) return;
     for (const file of Array.from(files)) {
+      if (!canAddToQueue()) {
+        console.warn("Queue full (max 10), skipping:", file.name);
+        continue;
+      }
       const id = String(Date.now()) + "-" + Math.random().toString(36).slice(2, 9);
       addItem({ id, name: file.name, type: "document", status: "queued" });
       uploadSingleFile(file, id);
@@ -1006,11 +1019,16 @@ function UrlTab({
 }) {
   const { items, loading, error, reload } = useList(endpoint);
   const [url, setUrl] = useState("");
-  const { addItem, updateItem } = React.useContext(UploadQueueContext);
+  const { addItem, updateItem, items: queueItems } = React.useContext(UploadQueueContext);
 
   async function add() {
     const trimmed = url.trim();
     if (!trimmed) return;
+    const active = queueItems.filter((it) => it.status === "queued" || it.status === "processing").length;
+    if (active >= 10) {
+      console.warn("Queue full (max 10), skipping:", trimmed);
+      return;
+    }
     const id = String(Date.now()) + "-" + Math.random().toString(36).slice(2, 9);
     addItem({ id, name: trimmed, type: kind === "videos" ? "video" : "webpage", status: "queued" });
     setUrl("");
@@ -1039,8 +1057,10 @@ function UrlTab({
 
   async function remove(id: Item["id"]) {
     try {
-      const decoded = decodeURIComponent(String(id));
-      await apiFetch(`${endpoint}/${decoded}`, { method: "DELETE" });
+      await apiFetch(
+        `${endpoint}?url=${encodeURIComponent(String(id))}`,
+        { method: "DELETE" }
+      );
       await reload();
     } catch (e) {
       console.error(e);
@@ -1082,10 +1102,10 @@ function UploadQueueWindow() {
   const prevCountRef = useRef(0);
   const [visibleItems, setVisibleItems] = useState<QueueItem[]>([]);
 
-  // Manage visible items: show all non-done immediately,
-  // schedule removal of done items after 3s
+  // Manage visible items: show all non-done/non-error immediately,
+  // schedule removal of done items after 3s, errored items after 5s
   useEffect(() => {
-    const active = items.filter((it) => it.status !== "done");
+    const active = items.filter((it) => it.status !== "done" && it.status !== "error");
     setVisibleItems(active);
 
     const doneIds = items.filter((it) => it.status === "done").map((it) => it.id);
@@ -1093,6 +1113,14 @@ function UploadQueueWindow() {
       const timer = setTimeout(() => {
         setVisibleItems((prev) => prev.filter((it) => !doneIds.includes(it.id)));
       }, 3000);
+      return () => clearTimeout(timer);
+    }
+
+    const errorIds = items.filter((it) => it.status === "error").map((it) => it.id);
+    if (errorIds.length > 0) {
+      const timer = setTimeout(() => {
+        setVisibleItems((prev) => prev.filter((it) => !errorIds.includes(it.id)));
+      }, 5000);
       return () => clearTimeout(timer);
     }
   }, [items]);
@@ -1107,8 +1135,8 @@ function UploadQueueWindow() {
 
   if (visibleItems.length === 0) return null;
 
-  const doneCount = items.filter((it) => it.status === "done").length;
-  const totalCount = items.length;
+  const activeDone = visibleItems.filter((it) => it.status === "done").length;
+  const activeCount = visibleItems.length;
 
   return (
     <div
@@ -1122,7 +1150,7 @@ function UploadQueueWindow() {
         <div className="flex items-center gap-2">
           <span className="text-sm font-medium">Uploads</span>
           <span className="text-xs text-muted-foreground">
-            {doneCount} / {totalCount} done
+            {activeDone} / {activeCount} done
           </span>
         </div>
         <button
