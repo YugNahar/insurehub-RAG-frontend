@@ -12,6 +12,9 @@ import {
   X,
   Upload,
   Trash2,
+  Check,
+  XCircle,
+  Loader2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -23,6 +26,48 @@ import { cn } from "@/lib/utils";
 // ─────────────────────────────────────────────
 
 const queryClient = new QueryClient();
+
+// ─────────────────────────────────────────────
+// Upload Queue Types & Context
+// ─────────────────────────────────────────────
+
+type QueueItem = {
+  id: string;
+  name: string;
+  type: "document" | "video" | "webpage";
+  status: "queued" | "processing" | "done" | "error";
+  error?: string;
+};
+
+type UploadQueueContextType = {
+  items: QueueItem[];
+  addItem: (item: QueueItem) => void;
+  updateItem: (id: string, patch: Partial<QueueItem>) => void;
+};
+
+const UploadQueueContext = React.createContext<UploadQueueContextType>({
+  items: [],
+  addItem: () => {},
+  updateItem: () => {},
+});
+
+function UploadQueueProvider({ children }: { children: ReactNode }) {
+  const [items, setItems] = useState<QueueItem[]>([]);
+
+  const addItem = useCallback((item: QueueItem) => {
+    setItems((prev) => [...prev, item]);
+  }, []);
+
+  const updateItem = useCallback((id: string, patch: Partial<QueueItem>) => {
+    setItems((prev) => prev.map((it) => (it.id === id ? { ...it, ...patch } : it)));
+  }, []);
+
+  return (
+    <UploadQueueContext.Provider value={{ items, addItem, updateItem }}>
+      {children}
+    </UploadQueueContext.Provider>
+  );
+}
 
 // ─────────────────────────────────────────────
 // Main App Shell
@@ -99,12 +144,15 @@ export function App() {
     <BrowserRouter>
       <QueryClientProvider client={queryClient}>
         <GlobalErrorBoundary>
-          <Routes>
-            <Route path="/" element={<IndexPage />} />
-            <Route path="/auth" element={<AuthPage />} />
-            <Route path="/admin" element={<AdminPage />} />
-            <Route path="*" element={<NotFoundComponent />} />
-          </Routes>
+          <UploadQueueProvider>
+            <Routes>
+              <Route path="/" element={<IndexPage />} />
+              <Route path="/auth" element={<AuthPage />} />
+              <Route path="/admin" element={<AdminPage />} />
+              <Route path="*" element={<NotFoundComponent />} />
+            </Routes>
+            <UploadQueueWindow />
+          </UploadQueueProvider>
         </GlobalErrorBoundary>
       </QueryClientProvider>
     </BrowserRouter>
@@ -830,19 +878,16 @@ function DocumentsTab() {
   const uploadEndpoint = "/upload";
   const { items, loading, error, reload } = useList(listEndpoint);
   const [dragOver, setDragOver] = useState(false);
-  const [uploading, setUploading] = useState(false);
-  const [uploadStatus, setUploadStatus] = useState<string | null>(null);
-  const [uploadError, setUploadError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const { addItem, updateItem } = React.useContext(UploadQueueContext);
 
-  async function pollUntilDone(jobId: string, filename: string): Promise<void> {
+  async function pollUntilDone(jobId: string, itemId: string): Promise<void> {
     for (let i = 0; i < 60; i++) {
       await new Promise((r) => setTimeout(r, 2000));
       try {
         const job = await apiFetch(`/upload/${jobId}`);
         if (job.status === "done") return;
         if (job.status === "error") throw new Error(job.error || "Processing failed");
-        setUploadStatus(`Processing ${filename}…`);
       } catch (e) {
         if (e instanceof Error && e.message.includes("Processing failed")) throw e;
       }
@@ -850,42 +895,42 @@ function DocumentsTab() {
     throw new Error("Timed out waiting for document to be indexed");
   }
 
-  async function uploadFiles(files: FileList | File[]) {
-    const list = Array.from(files);
-    if (!list.length) return;
-    setUploading(true);
-    setUploadError(null);
-    setUploadStatus(null);
+  async function uploadSingleFile(file: File, itemId: string) {
+    updateItem(itemId, { status: "processing" });
     try {
-      for (const file of list) {
-        setUploadStatus(`Uploading ${file.name}…`);
-        const fd = new FormData();
-        fd.append("file", file);
-        const res = await apiFetch(uploadEndpoint, { method: "POST", body: fd });
-        // Upload is async — poll until the background job finishes indexing
-        if (res?.job_id) {
-          setUploadStatus(`Indexing ${file.name}…`);
-          await pollUntilDone(res.job_id, file.name);
-        }
+      const fd = new FormData();
+      fd.append("file", file);
+      const res = await apiFetch(uploadEndpoint, { method: "POST", body: fd });
+      if (res?.job_id) {
+        await pollUntilDone(res.job_id, itemId);
       }
-      setUploadStatus(null);
+      updateItem(itemId, { status: "done" });
       await reload();
     } catch (e) {
-      setUploadError(e instanceof Error ? e.message : "Upload failed");
-    } finally {
-      setUploading(false);
-      setUploadStatus(null);
+      updateItem(itemId, { status: "error", error: e instanceof Error ? e.message : "Upload failed" });
     }
   }
 
   function onDrop(e: React.DragEvent<HTMLDivElement>) {
     e.preventDefault();
     setDragOver(false);
-    if (e.dataTransfer.files?.length) uploadFiles(e.dataTransfer.files);
+    const files = e.dataTransfer.files;
+    if (!files?.length) return;
+    for (const file of Array.from(files)) {
+      const id = String(Date.now()) + "-" + Math.random().toString(36).slice(2, 9);
+      addItem({ id, name: file.name, type: "document", status: "queued" });
+      uploadSingleFile(file, id);
+    }
   }
 
   function onChange(e: React.ChangeEvent<HTMLInputElement>) {
-    if (e.target.files?.length) uploadFiles(e.target.files);
+    const files = e.target.files;
+    if (!files?.length) return;
+    for (const file of Array.from(files)) {
+      const id = String(Date.now()) + "-" + Math.random().toString(36).slice(2, 9);
+      addItem({ id, name: file.name, type: "document", status: "queued" });
+      uploadSingleFile(file, id);
+    }
     e.target.value = "";
   }
 
@@ -917,7 +962,7 @@ function DocumentsTab() {
           <Upload className="h-5 w-5" />
         </div>
         <p className="mt-3 text-sm font-medium">
-          {uploadStatus ?? (uploading ? "Uploading…" : "Drag & drop files here, or click to browse")}
+          Drag & drop files here, or click to browse
         </p>
         <p className="mt-1 text-xs text-muted-foreground">PDF, DOCX, TXT and more</p>
         <input
@@ -926,12 +971,9 @@ function DocumentsTab() {
           multiple
           className="hidden"
           onChange={onChange}
+          aria-label="Upload files"
         />
       </div>
-
-      {uploadError && (
-        <p className="mt-3 text-xs text-destructive">{uploadError}</p>
-      )}
 
       <ItemList
         items={items}
@@ -953,6 +995,7 @@ function UrlTab({
   placeholder,
   addLabel,
   emptyLabel,
+  kind,
 }: {
   kind: string;
   endpoint: string;
@@ -963,30 +1006,35 @@ function UrlTab({
 }) {
   const { items, loading, error, reload } = useList(endpoint);
   const [url, setUrl] = useState("");
-  const [submitting, setSubmitting] = useState(false);
-  const [submitStatus, setSubmitStatus] = useState<string | null>(null);
-  const [submitError, setSubmitError] = useState<string | null>(null);
+  const { addItem, updateItem } = React.useContext(UploadQueueContext);
 
-  async function add(e: React.FormEvent) {
-    e.preventDefault();
-    if (!url.trim()) return;
-    setSubmitting(true);
-    setSubmitError(null);
-    setSubmitStatus("Processing… this can take up to a minute");
+  async function add() {
+    const trimmed = url.trim();
+    if (!trimmed) return;
+    const id = String(Date.now()) + "-" + Math.random().toString(36).slice(2, 9);
+    addItem({ id, name: trimmed, type: kind === "videos" ? "video" : "webpage", status: "queued" });
+    setUrl("");
+    updateItem(id, { status: "processing" });
     try {
       await apiFetch(endpoint, {
         method: "POST",
-        body: JSON.stringify({ url: url.trim() }),
+        body: JSON.stringify({ url: trimmed }),
       });
-      setUrl("");
-      setSubmitStatus(null);
+      updateItem(id, { status: "done" });
       await reload();
     } catch (e) {
-      setSubmitError(e instanceof Error ? e.message : "Failed to add");
-    } finally {
-      setSubmitting(false);
-      setSubmitStatus(null);
+      updateItem(id, { status: "error", error: e instanceof Error ? e.message : "Failed to add" });
     }
+  }
+
+  function onFormSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    add();
+  }
+
+  function onButtonClick(e: React.MouseEvent) {
+    e.preventDefault();
+    add();
   }
 
   async function remove(id: Item["id"]) {
@@ -1000,7 +1048,7 @@ function UrlTab({
 
   return (
     <Panel>
-      <form onSubmit={add} className="flex flex-col gap-2 sm:flex-row">
+      <form onSubmit={onFormSubmit} className="flex flex-col gap-2 sm:flex-row">
         <Input
           type="url"
           value={url}
@@ -1008,12 +1056,10 @@ function UrlTab({
           placeholder={placeholder}
           required
         />
-        <Button type="submit" disabled={submitting || !url.trim()}>
-          {submitting ? "Processing…" : addLabel}
+        <Button type="submit" disabled={!url.trim()} onClick={onButtonClick}>
+          {addLabel}
         </Button>
       </form>
-      {submitStatus && <p className="mt-2 text-xs text-muted-foreground">{submitStatus}</p>}
-      {submitError && <p className="mt-2 text-xs text-destructive">{submitError}</p>}
 
       <ItemList
         items={items}
@@ -1026,6 +1072,113 @@ function UrlTab({
         icon={icon}
       />
     </Panel>
+  );
+}
+
+function UploadQueueWindow() {
+  const { items } = React.useContext(UploadQueueContext);
+  const [hidden, setHidden] = useState(false);
+  const prevCountRef = useRef(0);
+  const [visibleItems, setVisibleItems] = useState<QueueItem[]>([]);
+
+  // Manage visible items: show all non-done immediately,
+  // schedule removal of done items after 3s
+  useEffect(() => {
+    const active = items.filter((it) => it.status !== "done");
+    setVisibleItems(active);
+
+    const doneIds = items.filter((it) => it.status === "done").map((it) => it.id);
+    if (doneIds.length > 0) {
+      const timer = setTimeout(() => {
+        setVisibleItems((prev) => prev.filter((it) => !doneIds.includes(it.id)));
+      }, 3000);
+      return () => clearTimeout(timer);
+    }
+  }, [items]);
+
+  // Re-show window when a new item is added
+  useEffect(() => {
+    if (items.length > prevCountRef.current) {
+      setHidden(false);
+    }
+    prevCountRef.current = items.length;
+  }, [items.length]);
+
+  if (visibleItems.length === 0) return null;
+
+  const doneCount = items.filter((it) => it.status === "done").length;
+  const totalCount = items.length;
+
+  return (
+    <div
+      className={cn(
+        "fixed bottom-24 right-5 z-[60] w-[320px] rounded-2xl border border-border/70 bg-card/95 shadow-2xl backdrop-blur",
+        hidden && "hidden",
+      )}
+    >
+      {/* Header */}
+      <div className="flex items-center justify-between border-b border-border/60 px-4 py-3">
+        <div className="flex items-center gap-2">
+          <span className="text-sm font-medium">Uploads</span>
+          <span className="text-xs text-muted-foreground">
+            {doneCount} / {totalCount} done
+          </span>
+        </div>
+        <button
+          type="button"
+          onClick={() => setHidden(true)}
+          className="rounded-md p-1 text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground"
+          aria-label="Hide upload queue"
+        >
+          <X className="h-4 w-4" />
+        </button>
+      </div>
+
+      {/* Items */}
+      <div className="max-h-[260px] overflow-y-auto p-2">
+        {visibleItems.slice(0, 5).map((item) => (
+          <div
+            key={item.id}
+            className="flex items-center gap-3 rounded-lg px-3 py-2.5 transition-colors hover:bg-muted/30"
+          >
+            {/* Icon */}
+            <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-primary/10">
+              {item.type === "document" && <FileText className="h-4 w-4 text-primary" />}
+              {item.type === "video" && <Film className="h-4 w-4 text-primary" />}
+              {item.type === "webpage" && <Globe className="h-4 w-4 text-primary" />}
+            </div>
+
+            {/* Name */}
+            <div className="min-w-0 flex-1 truncate text-sm font-medium max-w-[200px]">
+              {item.name}
+            </div>
+
+            {/* Status indicator */}
+            <div className="shrink-0">
+              {item.status === "queued" && (
+                <span className="block h-2 w-2 rounded-full bg-muted-foreground/40" />
+              )}
+              {item.status === "processing" && (
+                <Loader2 className="h-4 w-4 animate-spin text-primary" />
+              )}
+              {item.status === "done" && (
+                <Check className="h-4 w-4 text-emerald-500" />
+              )}
+              {item.status === "error" && (
+                <span title={item.error}>
+                  <XCircle className="h-4 w-4 text-destructive" />
+                </span>
+              )}
+            </div>
+          </div>
+        ))}
+        {visibleItems.length > 5 && (
+          <div className="px-3 py-2 text-center text-xs text-muted-foreground">
+            +{visibleItems.length - 5} more
+          </div>
+        )}
+      </div>
+    </div>
   );
 }
 
