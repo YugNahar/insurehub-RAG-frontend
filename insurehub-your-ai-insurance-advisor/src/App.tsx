@@ -15,6 +15,7 @@ import {
   Check,
   XCircle,
   Loader2,
+  Search,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -854,8 +855,8 @@ function useList(endpoint: string) {
         const obj = v as Record<string, unknown>;
         // Documents: {filename, chunks} → use filename as id for delete
         if (obj.filename) return { id: obj.filename as string, name: obj.filename as string, chunks: obj.chunks as number };
-        // Videos: {url, title} → use url as id for delete, title for display
-        if (obj.url) return { id: obj.url as string, url: obj.url as string, title: obj.title as string ?? obj.url as string };
+        // Videos/webpages: {url, title} → use url as id for delete, title for display
+        if (obj.url) return { id: obj.url as string, url: obj.url as string, title: obj.title as string ?? obj.url as string, chunks: obj.chunks as number | undefined };
         return { ...(obj as Item), id: (obj.id ?? obj.name ?? obj.filename ?? i) as string | number };
       });
       setItems(arr);
@@ -880,6 +881,7 @@ function DocumentsTab() {
   const [dragOver, setDragOver] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const { addItem, updateItem, items: queueItems } = React.useContext(UploadQueueContext);
+  const [searchQuery, setSearchQuery] = useState("");
 
   function canAddToQueue(): boolean {
     const active = queueItems.filter((it) => it.status === "queued" || it.status === "processing").length;
@@ -956,6 +958,14 @@ function DocumentsTab() {
     }
   }
 
+  function getSearchableText(it: Item): string {
+    return [it.filename, it.name, it.title, it.url, String(it.id)].filter(Boolean).join(" ");
+  }
+
+  const filteredItems = searchQuery.trim()
+    ? items.filter((it) => getSearchableText(it).toLowerCase().includes(searchQuery.trim().toLowerCase()))
+    : items;
+
   return (
     <Panel>
       <div
@@ -988,8 +998,22 @@ function DocumentsTab() {
         />
       </div>
 
+      <div className="mt-5">
+        <div className="relative">
+          <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            type="text"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            placeholder="Search documents by name…"
+            className="pl-9"
+          />
+        </div>
+      </div>
+
       <ItemList
-        items={items}
+        items={filteredItems}
+        allItems={items}
         loading={loading}
         error={error}
         emptyLabel="No documents uploaded yet."
@@ -997,6 +1021,7 @@ function DocumentsTab() {
         renderLabel={(it) => it.filename || it.name || it.title || String(it.id)}
         renderSubLabel={(it) => it.chunks != null ? `${it.chunks} chunks indexed` : undefined}
         icon={<FileText className="h-4 w-4 text-primary" />}
+        itemKind="document"
       />
     </Panel>
   );
@@ -1020,6 +1045,7 @@ function UrlTab({
   const { items, loading, error, reload } = useList(endpoint);
   const [url, setUrl] = useState("");
   const { addItem, updateItem, items: queueItems } = React.useContext(UploadQueueContext);
+  const [searchQuery, setSearchQuery] = useState("");
 
   async function add() {
     const trimmed = url.trim();
@@ -1067,6 +1093,14 @@ function UrlTab({
     }
   }
 
+  function getSearchableText(it: Item): string {
+    return [it.url, it.title, it.name, String(it.id)].filter(Boolean).join(" ");
+  }
+
+  const filteredItems = searchQuery.trim()
+    ? items.filter((it) => getSearchableText(it).toLowerCase().includes(searchQuery.trim().toLowerCase()))
+    : items;
+
   return (
     <Panel>
       <form onSubmit={onFormSubmit} className="flex flex-col gap-2 sm:flex-row">
@@ -1082,8 +1116,22 @@ function UrlTab({
         </Button>
       </form>
 
+      <div className="mt-5">
+        <div className="relative">
+          <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            type="text"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            placeholder={`Search ${kind === "videos" ? "videos" : "webpages"} by title or URL…`}
+            className="pl-9"
+          />
+        </div>
+      </div>
+
       <ItemList
-        items={items}
+        items={filteredItems}
+        allItems={items}
         loading={loading}
         error={error}
         emptyLabel={emptyLabel}
@@ -1091,6 +1139,7 @@ function UrlTab({
         renderLabel={(it) => (it.title && it.title !== it.url ? it.title : it.url || it.name || String(it.id))}
         renderSubLabel={(it) => (it.title && it.title !== it.url && it.url ? it.url : undefined)}
         icon={icon}
+        itemKind={kind === "videos" ? "video" : "webpage"}
       />
     </Panel>
   );
@@ -1213,6 +1262,7 @@ function UploadQueueWindow() {
 
 function ItemList({
   items,
+  allItems,
   loading,
   error,
   emptyLabel,
@@ -1220,8 +1270,10 @@ function ItemList({
   renderLabel,
   renderSubLabel,
   icon,
+  itemKind,
 }: {
   items: Item[];
+  allItems: Item[];
   loading: boolean;
   error: string | null;
   emptyLabel: string;
@@ -1229,7 +1281,13 @@ function ItemList({
   renderLabel: (it: Item) => string;
   renderSubLabel?: (it: Item) => string | undefined;
   icon: React.ReactNode;
+  itemKind: string;
 }) {
+  // Only show "No results" if we have items but none match the filter
+  const hasSearch = allItems.length > 0 && items.length === 0;
+  const totalChunks = items.reduce((sum, it) => sum + (it.chunks ?? 0), 0);
+  const hasChunks = items.some((it) => it.chunks != null);
+
   return (
     <div className="mt-6">
       <div className="mb-2 text-xs font-medium uppercase tracking-wider text-muted-foreground">
@@ -1239,39 +1297,51 @@ function ItemList({
         <p className="text-sm text-muted-foreground">Loading…</p>
       ) : error ? (
         <p className="text-sm text-destructive">{error}</p>
-      ) : items.length === 0 ? (
+      ) : allItems.length === 0 ? (
         <p className="text-sm text-muted-foreground">{emptyLabel}</p>
+      ) : hasSearch ? (
+        <p className="text-sm text-muted-foreground">No results match your search.</p>
       ) : (
-        <ul className="divide-y divide-border/60 overflow-hidden rounded-xl border border-border/60 bg-background/30">
-          {items.map((it) => {
-            const sub = renderSubLabel?.(it);
-            return (
-              <li
-                key={String(it.id)}
-                className="flex items-center gap-3 px-4 py-3"
-              >
-                <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-primary/10">
-                  {icon}
-                </div>
-                <div className="min-w-0 flex-1">
-                  <div className="truncate text-sm font-medium">{renderLabel(it)}</div>
-                  {sub && (
-                    <div className="truncate text-xs text-muted-foreground">{sub}</div>
-                  )}
-                </div>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  onClick={() => onRemove(it.id)}
-                  className="text-muted-foreground hover:text-destructive"
-                  aria-label="Remove"
+        <>
+          <ul className="divide-y divide-border/60 overflow-hidden rounded-xl border border-border/60 bg-background/30">
+            {items.map((it, idx) => {
+              const sub = renderSubLabel?.(it);
+              return (
+                <li
+                  key={String(it.id)}
+                  className="flex items-center gap-3 px-4 py-3"
                 >
-                  <Trash2 className="h-4 w-4" />
-                </Button>
-              </li>
-            );
-          })}
-        </ul>
+                  <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-muted/60 text-xs font-medium text-muted-foreground">
+                    {idx + 1}
+                  </span>
+                  <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-primary/10">
+                    {icon}
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate text-sm font-medium">{renderLabel(it)}</div>
+                    {sub && (
+                      <div className="truncate text-xs text-muted-foreground">{sub}</div>
+                    )}
+                  </div>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    onClick={() => onRemove(it.id)}
+                    className="text-muted-foreground hover:text-destructive"
+                    aria-label="Remove"
+                  >
+                    <Trash2 className="h-4 w-4" />
+                  </Button>
+                </li>
+              );
+            })}
+          </ul>
+          {hasChunks && (
+            <div className="mt-2 text-xs text-muted-foreground">
+              Showing {items.length} {itemKind}{items.length !== 1 ? "s" : ""} · {totalChunks} chunk{totalChunks !== 1 ? "s" : ""}
+            </div>
+          )}
+        </>
       )}
     </div>
   );
