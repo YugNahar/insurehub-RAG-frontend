@@ -1039,7 +1039,8 @@ function UrlTab({
 
   async function remove(id: Item["id"]) {
     try {
-      await apiFetch(`${endpoint}/${id}`, { method: "DELETE" });
+      const decoded = decodeURIComponent(String(id));
+      await apiFetch(`${endpoint}/${decoded}`, { method: "DELETE" });
       await reload();
     } catch (e) {
       console.error(e);
