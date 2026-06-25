@@ -167,10 +167,7 @@
   </div>
 
   <h1>Sign in</h1>
-  <p class="subtitle">Admin access only. Enter your backend URL once to get started.</p>
-
-  <label for="backendUrl">Backend URL</label>
-  <input type="url" id="backendUrl" placeholder="https://your-tunnel.trycloudflare.com" autocomplete="off" />
+  <p class="subtitle">Admin access only.</p>
 
   <label for="username">Username</label>
   <input type="text" id="username" placeholder="admin" autocomplete="username" />
@@ -184,24 +181,12 @@
 
 <script>
   // __API_URL__ is replaced by the Vite build plugin with VITE_API_BASE_URL at deploy time.
-  // Falls back to localStorage so the field can still be overridden manually.
-  const _BUILT_IN_API = '__API_URL__';
-  function getBackendUrl() {
-    const stored = localStorage.getItem('insure_backend_url') || '';
-    return (stored || _BUILT_IN_API).replace(/\/$/, '');
-  }
-  function setBackendUrl(url) {
-    localStorage.setItem('insure_backend_url', url.replace(/\/$/, ''));
-  }
-
-  // Pre-fill saved backend URL
-  const savedUrl = getBackendUrl();
-  if (savedUrl) document.getElementById('backendUrl').value = savedUrl;
+  const API = '__API_URL__'.replace(/\/$/, '');
 
   // If already logged in, verify and go straight to admin
   const _existingToken = localStorage.getItem('insure_token');
-  if (_existingToken && getBackendUrl()) {
-    fetch(`${getBackendUrl()}/auth/verify`, {
+  if (_existingToken && API) {
+    fetch(`${API}/auth/verify`, {
       headers: { Authorization: 'Bearer ' + _existingToken }
     }).then(r => { if (r.ok) window.location.href = '/admin'; }).catch(() => {});
   }
@@ -213,11 +198,9 @@
   async function handleLogin() {
     const btn = document.getElementById('loginBtn');
     const err = document.getElementById('errorMsg');
-    const backendUrl = document.getElementById('backendUrl').value.trim().replace(/\/$/, '');
     const username = document.getElementById('username').value.trim();
     const password = document.getElementById('password').value;
 
-    if (!backendUrl) { showError('Please enter the Backend URL.'); return; }
     if (!username || !password) { showError('Please enter both username and password.'); return; }
 
     btn.disabled = true;
@@ -225,7 +208,7 @@
     err.style.display = 'none';
 
     try {
-      const res = await fetch(`${backendUrl}/auth/login`, {
+      const res = await fetch(`${API}/auth/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ username, password }),
@@ -233,7 +216,6 @@
 
       if (res.ok) {
         const data = await res.json();
-        setBackendUrl(backendUrl);
         localStorage.setItem('insure_token', data.access_token);
         localStorage.setItem('insure_user', username);
         window.location.href = '/admin';
@@ -242,7 +224,7 @@
         showError(data.detail || 'Incorrect username or password.');
       }
     } catch (e) {
-      showError('Cannot reach the server. Check the Backend URL and your connection.');
+      showError('Cannot reach the server. Check your connection.');
     } finally {
       btn.disabled = false;
       btn.innerHTML = 'Sign in';
