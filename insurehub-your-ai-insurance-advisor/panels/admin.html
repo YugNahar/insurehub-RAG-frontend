@@ -882,8 +882,8 @@ function refreshTunnelUrl() {
       link.textContent = url.replace('https://', '');
       link.href = url;
       const agentLink = document.getElementById('agent-link');
-      agentLink.textContent = 'insurehub-your-ai-insurance-advisor.vercel.app/agent-dashboard';
-      agentLink.href = 'https://insurehub-your-ai-insurance-advisor.vercel.app/agent-dashboard';
+      agentLink.textContent = '/agent-dashboard';
+      agentLink.href = '/agent-dashboard';
     }
   }).catch(() => {});
 }

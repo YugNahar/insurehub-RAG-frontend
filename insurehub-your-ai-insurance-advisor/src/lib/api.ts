@@ -1,7 +1,7 @@
 export const API_URL =
   (import.meta.env.VITE_API_BASE_URL as string | undefined)?.replace(/\/$/, "") ||
   (import.meta.env.VITE_API_URL as string | undefined)?.replace(/\/$/, "") ||
-  "https://mississippi-wallpapers-pick-depending.trycloudflare.com";
+  "";
 
 export function getToken(): string | null {
   if (typeof window === "undefined") return null;
