@@ -402,6 +402,15 @@ function ChatWidget({
     }
   }
 
+  function cancelHandoff() {
+    if (chatModeRef.current !== "waiting") return;
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ type: "cancel_handoff" }));
+    }
+    // Optimistically reset — the WS reply will confirm with the email message
+    setModeSync("ai");
+  }
+
   async function send() {
     const text = input.trim();
     if (!text || sending) return;
@@ -584,6 +593,17 @@ function ChatWidget({
         </div>
 
         <div className="border-t border-border/60 bg-background/40 p-2.5">
+          {chatMode === "waiting" && (
+            <div className="mb-2 flex items-center justify-between px-1">
+              <span className="text-xs text-muted-foreground">Looking for an available agent…</span>
+              <button
+                onClick={cancelHandoff}
+                className="text-xs text-muted-foreground underline hover:text-foreground"
+              >
+                Cancel
+              </button>
+            </div>
+          )}
           <div className="flex items-end gap-2 rounded-xl border border-border/70 bg-background/60 p-1.5 focus-within:border-primary/60 focus-within:ring-1 focus-within:ring-primary/40">
             <textarea
               ref={inputRef}
