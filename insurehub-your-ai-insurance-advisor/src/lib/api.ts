@@ -1,7 +1,21 @@
-export const API_URL =
-  (import.meta.env.VITE_API_BASE_URL as string | undefined)?.replace(/\/$/, "") ||
-  (import.meta.env.VITE_API_URL as string | undefined)?.replace(/\/$/, "") ||
-  "";
+// When served from the backend directly (any *.trycloudflare.com tunnel or localhost)
+// use relative "" so chat works even after a tunnel restart — no hardcoded URL to go stale.
+// When served from Vercel (different origin), use the baked VITE_API_BASE_URL to reach
+// the tunnel backend. The restart script updates that env var and redeploys Vercel.
+function _resolveApiUrl(): string {
+  const baked =
+    (import.meta.env.VITE_API_BASE_URL as string | undefined)?.replace(/\/$/, "") ||
+    (import.meta.env.VITE_API_URL as string | undefined)?.replace(/\/$/, "") ||
+    "";
+  if (typeof window !== "undefined") {
+    const h = window.location.hostname;
+    if (h === "localhost" || h === "127.0.0.1" || h.endsWith(".trycloudflare.com")) {
+      return "";
+    }
+  }
+  return baked;
+}
+export const API_URL: string = _resolveApiUrl();
 
 export function getToken(): string | null {
   if (typeof window === "undefined") return null;
@@ -35,10 +49,17 @@ export async function apiFetch(path: string, init: RequestInit = {}) {
 export interface StreamMeta {
   sources: string[];
   needs_human: boolean;
+  offline_escalated: boolean;
+  corrected_text?: string;
 }
 
-/** Convert an http(s) API URL to the equivalent ws(s) URL for WebSocket connections. */
+/** Derive WebSocket base URL from the current page origin when no API_URL is set. */
 export function getWsUrl(): string {
+  if (!API_URL) {
+    const proto = typeof location !== "undefined" && location.protocol === "https:" ? "wss" : "ws";
+    const host  = typeof location !== "undefined" ? location.host : "localhost:8501";
+    return `${proto}://${host}`;
+  }
   return API_URL.replace(/^https/, "wss").replace(/^http(?!s)/, "ws");
 }
 
@@ -91,9 +112,14 @@ export async function apiStream(
       if (textPart) onToken(textPart);
       try {
         const meta = JSON.parse(jsonPart);
-        onDone({ sources: meta.sources ?? [], needs_human: meta.needs_human ?? false });
+        onDone({
+          sources: meta.sources ?? [],
+          needs_human: meta.needs_human ?? false,
+          offline_escalated: meta.offline_escalated ?? false,
+          corrected_text: meta.corrected_text,
+        });
       } catch {
-        onDone({ sources: [], needs_human: false });
+        onDone({ sources: [], needs_human: false, offline_escalated: false });
       }
       return;
     }
@@ -103,5 +129,5 @@ export async function apiStream(
   }
 
   if (buffer) onToken(buffer);
-  onDone({ sources: [], needs_human: false });
+  onDone({ sources: [], needs_human: false, offline_escalated: false });
 }

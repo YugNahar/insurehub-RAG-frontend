@@ -355,10 +355,11 @@ function ChatWidget({
         { role: "system", content: msg.message || "You're back with Layla." },
       ]);
     } else if (msg.type === "waiting") {
-      setMessages((m) => [
-        ...m,
-        { role: "system", content: msg.message },
-      ]);
+      setMessages((m) => [...m, { role: "system", content: msg.message }]);
+    } else if (msg.type === "handoff_timeout") {
+      setModeSync("ai");
+      setAgentName(null);
+      setMessages((m) => [...m, { role: "system", content: msg.message || "No agents available. Our team has been notified by email." }]);
     } else if (msg.type === "session_deleted") {
       // Agent cleared the conversation — wipe local state and start fresh
       window.localStorage.removeItem(SESSION_ID_KEY);
@@ -432,6 +433,29 @@ function ChatWidget({
         },
         (meta) => {
           if (meta.needs_human) requestHandoff();
+          if (meta.offline_escalated) {
+            setMessages((m) => [
+              ...m,
+              {
+                role: "system",
+                content: "No agents are available right now. Your question has been emailed to our support team and someone will reach out to you soon.",
+              },
+            ]);
+          }
+          if (meta.corrected_text) {
+            // Backend detected the stream was cut off mid-sentence and trimmed it —
+            // replace the last assistant message with the clean complete version.
+            setMessages((m) => {
+              const updated = [...m];
+              for (let i = updated.length - 1; i >= 0; i--) {
+                if (updated[i].role === "assistant") {
+                  updated[i] = { ...updated[i], content: meta.corrected_text! };
+                  break;
+                }
+              }
+              return updated;
+            });
+          }
         },
         (errMsg) => {
           setMessages((m) => {
