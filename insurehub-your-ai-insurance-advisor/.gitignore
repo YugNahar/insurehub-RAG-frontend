@@ -23,3 +23,7 @@ dist-ssr
 *.sln
 *.sw?
 .vercel
+
+# env files with secrets / rotating tunnel URLs
+.env
+.!*!.*

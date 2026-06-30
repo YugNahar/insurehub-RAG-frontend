@@ -438,11 +438,23 @@
 
 <script>
 // ── Backend URL ────────────────────────────────────────────────────────────────
-const API = '__API_URL__'.replace(/\/$/, '');
+// On the backend's own domain (tunnel / localhost): use current origin so the
+// panel survives tunnel restarts automatically.
+// On Vercel (static host): use the tunnel URL baked in at build time.
+(function () {
+  const built = '__API_URL__'.replace(/\/$/, '');
+  const h = window.location.hostname;
+  if (h === 'localhost' || h === '127.0.0.1' || h.endsWith('.trycloudflare.com')) {
+    window.__BACKEND_URL = window.location.origin.replace(/\/$/, '');
+  } else {
+    window.__BACKEND_URL = (built && !built.startsWith('__')) ? built : 'http://localhost:8501';
+  }
+})();
+const API = window.__BACKEND_URL;
 
 // ── Auth guard ────────────────────────────────────────────────────────────────
 const token = localStorage.getItem('insure_token');
-if (!token || !API) { window.location.href = '/auth'; }
+if (!token) { window.location.href = API + '/auth'; }
 
 // Show backend host in topbar so admin always knows which server is connected
 (function() {
@@ -505,6 +517,7 @@ function logout() {
 }
 
 // ── Tabs ──────────────────────────────────────────────────────────────────────
+const _tabLoaded = {};
 function switchTab(name) {
   document.querySelectorAll('.tab').forEach((t, i) => {
     const names = ['docs','video','web'];
@@ -512,6 +525,13 @@ function switchTab(name) {
   });
   document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
   document.getElementById('tab-' + name).classList.add('active');
+  // Auto-load the first time a tab is shown
+  if (!_tabLoaded[name]) {
+    _tabLoaded[name] = true;
+    if (name === 'docs')  loadDocs();
+    if (name === 'video') loadVideos();
+    if (name === 'web')   loadWebpages();
+  }
 }
 
 // ── Toast ─────────────────────────────────────────────────────────────────────
@@ -616,6 +636,66 @@ async function pollJob(job_id, fill) {
   }
   showToast('Timed out waiting for job to complete.', 'error');
   bar.classList.remove('active');
+}
+
+// ── Video upload ──────────────────────────────────────────────────────────────
+async function uploadVideo() {
+  const input = document.getElementById('videoUrl');
+  const btn   = document.getElementById('videoBtn');
+  const url   = input.value.trim();
+  if (!url) return;
+  btn.disabled = true;
+  btn.textContent = 'Adding…';
+  try {
+    const res = await fetch(`${API}/videos`, {
+      method: 'POST',
+      headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url }),
+    });
+    if (res.status === 401) { logout(); return; }
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || 'Failed to add video.');
+    if (data.status === 'already_exists') {
+      showToast('Video already in knowledge base.', 'info');
+    } else {
+      showToast(`✓ "${data.title || url}" — ${data.chunks || 0} chunks indexed`, 'success');
+    }
+    input.value = '';
+    loadVideos();
+  } catch (e) {
+    showToast(e.message, 'error');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Add Video';
+  }
+}
+
+// ── Webpage upload ────────────────────────────────────────────────────────────
+async function uploadWebpage() {
+  const input = document.getElementById('webUrl');
+  const btn   = document.getElementById('webBtn');
+  const url   = input.value.trim();
+  if (!url) return;
+  btn.disabled = true;
+  btn.textContent = 'Adding…';
+  try {
+    const res = await fetch(`${API}/webpages`, {
+      method: 'POST',
+      headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url }),
+    });
+    if (res.status === 401) { logout(); return; }
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || 'Failed to add webpage.');
+    showToast(`✓ Webpage added — ${data.chunks || 0} chunks indexed`, 'success');
+    input.value = '';
+    loadWebpages();
+  } catch (e) {
+    showToast(e.message, 'error');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Add Page';
+  }
 }
 
 // ── Docs list ─────────────────────────────────────────────────────────────────
@@ -895,6 +975,10 @@ function copyTunnelUrl() {
     setTimeout(() => btn.textContent = 'copy', 1500);
   });
 }
+// Auto-load the default (docs) tab on page init
+_tabLoaded['docs'] = true;
+loadDocs();
+
 refreshTunnelUrl();
 setInterval(refreshTunnelUrl, 15000);
 </script>

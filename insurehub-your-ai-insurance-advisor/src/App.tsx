@@ -202,6 +202,7 @@ function ChatWidget({
   const [hydrated, setHydrated] = useState(false);
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
+  const [suggestedQs, setSuggestedQs] = useState<string[]>([]);
   const [sessionId, setSessionId] = useState<string>("default");
   const [chatMode, setChatMode] = useState<ChatMode>("ai");
   const [agentName, setAgentName] = useState<string | null>(null);
@@ -407,6 +408,7 @@ function ChatWidget({
 
     setMessages((m) => [...m, { role: "user", content: text }]);
     setInput("");
+    setSuggestedQs([]);
 
     // In human mode, send via WebSocket directly
     if (chatMode === "human" && wsRef.current?.readyState === WebSocket.OPEN) {
@@ -455,6 +457,9 @@ function ChatWidget({
               }
               return updated;
             });
+          }
+          if (meta.suggested_questions?.length) {
+            setSuggestedQs(meta.suggested_questions);
           }
         },
         (errMsg) => {
@@ -563,6 +568,19 @@ function ChatWidget({
               <span>{chatMode === "human" ? `${agentName} is typing…` : "Layla is typing…"}</span>
             </div>
           )}
+          {!sending && suggestedQs.length > 0 && (
+            <div className="follow-chips-row">
+              {suggestedQs.map((q, i) => (
+                <button
+                  key={i}
+                  className="follow-chip"
+                  onClick={() => { setInput(q); setSuggestedQs([]); setTimeout(() => inputRef.current?.focus(), 0); }}
+                >
+                  {q}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
 
         <div className="border-t border-border/60 bg-background/40 p-2.5">
@@ -621,15 +639,15 @@ function MessageBubble({ message }: { message: Message }) {
           {isAgent ? (agentName?.[0]?.toUpperCase() ?? "A") : "L"}
         </div>
       )}
-      <div className="flex flex-col gap-0.5">
+      <div className={cn("flex min-w-0 flex-col gap-0.5", isUser ? "items-end w-full" : "flex-1")}>
         {isAgent && agentName && (
           <div className="text-[10px] font-medium text-blue-400 pl-1">{agentName}</div>
         )}
         <div
           className={cn(
-            "max-w-[80%] whitespace-pre-wrap rounded-2xl px-3.5 py-2 text-sm leading-relaxed",
+            "max-w-[85%] whitespace-pre-wrap rounded-2xl px-3.5 py-2 text-sm leading-relaxed break-words",
             isUser
-              ? "bg-primary text-primary-foreground rounded-br-sm"
+              ? "ml-auto bg-primary text-primary-foreground rounded-br-sm"
               : isAgent
               ? "bg-blue-500/15 text-foreground rounded-bl-sm border border-blue-500/20"
               : "bg-secondary text-secondary-foreground rounded-bl-sm",
